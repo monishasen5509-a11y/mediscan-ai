@@ -1,0 +1,3 @@
+stremlist
+google-genai
+pillow
