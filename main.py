@@ -465,8 +465,8 @@ with right_col:
                 url_1mg = f"https://www.1mg.com/search/all?name={encoded}"
                 url_pharmeasy = f"https://pharmeasy.in/search/all?name={encoded}"
                 url_apollo = f"https://www.apollopharmacy.in/search-medicines/{encoded}"
-                st.markdown(f"""
-                    <div class="buy-box">
-                        <div style="font-weight: 700; color: #065f46; font-size: 1.05rem;">💊 {med}</div>
-                        <div class="buy-links">
-                            <a href="{url_1mg}" target="_blank">Buy on Tata 1mg
+                buy_html = (
+                    '<div class="buy-box">'
+                    f'<div style="font-weight: 700; color: #065f46; font-size: 1.05rem;">💊 {med}</div>'
+                    '<div class="buy-links">'
+                    f'<a href="{url_1mg}" target="_blank">Buy on Tata 1mg ↗</a>'
