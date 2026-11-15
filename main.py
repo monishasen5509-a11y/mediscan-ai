@@ -5,6 +5,7 @@ from PIL import Image
 from datetime import datetime
 import json
 import urllib.parse
+import re
 
 st.set_page_config(
     page_title="MediScan AI | Smart Medicine Assistant",
@@ -57,15 +58,32 @@ st.markdown("""
         background-color: #0d9488;
         color: white !important;
         text-decoration: none;
-        padding: 6px 14px;
+        padding: 7px 15px;
         border-radius: 8px;
-        font-size: 0.88rem;
+        font-size: 0.9rem;
         font-weight: 600;
         margin-right: 8px;
-        margin-top: 6px;
+        margin-top: 8px;
     }
     .buy-links a:hover {
-        background-color: #0f766e;
+        opacity: 0.9;
+    }
+    .wa-btn {
+        display: inline-block;
+        background-color: #25D366;
+        color: white !important;
+        text-decoration: none;
+        padding: 10px 18px;
+        border-radius: 10px;
+        font-size: 0.98rem;
+        font-weight: 700;
+        text-align: center;
+        width: 100%;
+        margin-top: 8px;
+        box-shadow: 0 3px 10px rgba(37, 211, 102, 0.25);
+    }
+    .wa-btn:hover {
+        opacity: 0.92;
     }
     .reminder-badge {
         background-color: #ecfdf5;
@@ -102,22 +120,60 @@ if "detected_meds" not in st.session_state:
 if "reminders" not in st.session_state:
     st.session_state.reminders = []
 
+FALLBACK_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-3.8-flash"
+]
+
 def get_client():
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
         return None
     return genai.Client(api_key=api_key)
 
-def extract_med_names(client, text_summary):
-    try:
-        res = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=f"Extract ONLY the medicine names (with strength if available) as a comma-separated list from this text. Do not add any extra words or numbering:\n\n{text_summary}"
-        )
-        meds = [m.strip() for m in res.text.split(",") if m.strip()]
-        return meds[:8]
-    except Exception:
-        return []
+def generate_with_fallback(client, contents):
+    last_error = None
+    for model_name in FALLBACK_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
+
+def parse_report_and_meds(raw_text):
+    clean_report = raw_text.strip()
+    meds = []
+
+    if "MEDS_LIST:" in raw_text:
+        parts = raw_text.split("MEDS_LIST:")
+        clean_report = parts[0].strip()
+        meds_line = parts[1].strip().splitlines()[0]
+        meds = [m.strip(" -*•`") for m in meds_line.split(",") if m.strip(" -*•`")]
+
+    if not meds:
+        matches = re.findall(r"(?:^|\n)\s*(?:#+\s*|\*\*)?\d+\.\s*(?:\*\*)?([A-Za-z0-9\s\-\+\./\(\)]+?)(?:\*\*|\n|$)", clean_report)
+        for m in matches:
+            cleaned = m.strip(" :-*")
+            if 2 < len(cleaned) < 55 and not any(skip in cleaned.lower() for skip in ["summary", "advice", "complaint", "finding", "test", "consultation", "follow"]):
+                meds.append(cleaned)
+
+    seen = set()
+    unique_meds = []
+    for m in meds:
+        key = m.lower()
+        if key not in seen:
+            seen.add(key)
+            unique_meds.append(m)
+
+    return clean_report, unique_meds[:10]
 
 with st.sidebar:
     st.markdown("## 🏥 MediScan AI")
@@ -128,17 +184,18 @@ with st.sidebar:
     st.markdown("### 📌 All Features")
     st.markdown("""
     - **Scan & Camera:** Upload or snap prescription live.
+    - **Generic Alternatives:** Affordable Jan Aushadhi / generic options.
     - **Price & Buy Links:** Estimated MRP (₹) + 1mg, PharmEasy & Apollo links.
-    - **Search & Safety:** Check uses & drug interactions.
-    - **Smart Reminder:** Browser alert at dose time.
+    - **Voice Reader & WhatsApp:** Listen to report & share in 1 click.
+    - **Search, Safety & Reminder:** Drug check & browser dose alerts.
     """)
     st.divider()
-    st.warning("⚠️ **Medical Disclaimer:** Prices are approximate estimates. Always consult a certified doctor.")
+    st.warning("⚠️ **Medical Disclaimer:** Prices & generic suggestions are informational. Consult a doctor or pharmacist before substituting medicines.")
 
 st.markdown("""
     <div class="hero-banner">
         <h1>💊 MediScan AI</h1>
-        <p>Complete Smart Health Assistant — Scan Prescriptions, Check Prices, Buy Online & Set Reminders</p>
+        <p>Complete Smart Health Assistant — Scan, Generic Alternatives, Voice Reader, Buy Online & Reminders</p>
     </div>
 """, unsafe_allow_html=True)
 
@@ -168,26 +225,30 @@ with left_col:
                 if not client:
                     st.error("⚠️ Server API Key not configured yet.")
                 else:
-                    with st.spinner("Reading handwriting, estimating prices & preparing buy links..."):
+                    with st.spinner("Reading handwriting, finding generic alternatives & preparing buy links..."):
                         try:
                             prompt = f"""
                             You are a helpful medical assistant in India. Carefully read this doctor's prescription image and extract all medicines listed.
                             Provide the response in {language}.
-                            For each medicine, clearly format:
-                            - **Medicine Name & Strength**
-                            - **Estimated Current Price in India (MRP in ₹)** (give realistic approximate strip/bottle price range in INR)
-                            - **Purpose / What it is used for**
-                            - **Dosage & Timing** (morning/night, before/after food, duration)
-                            - **Key Precautions / Side Effects**
+                            Number each medicine clearly like:
+                            ### 1. Medicine Name & Strength
+                            - **Composition / উপাদান**
+                            - **Estimated Price (MRP in ₹)** (realistic approximate strip/bottle price range in India)
+                            - **Affordable Generic Alternative (Jan Aushadhi / সাশ্রয়ী বিকল্প)** (mention exact generic salt/molecule name and approximate lower Jan Aushadhi / generic price in ₹)
+                            - **Purpose / কাজের বিবরণ**
+                            - **Dosage & Timing / খাওয়ার নিয়ম** (morning/night, before/after food, duration)
+                            - **Key Precautions & Side Effects**
+
+                            MANDATORY FINAL LINE:
+                            At the very bottom of your response, write a single line starting with MEDS_LIST: followed by the clean medicine names separated by commas. Example:
+                            MEDS_LIST: Tab. Ventidox-M, Tab. HH-Fexo 120
                             """
-                            response = client.models.generate_content(
-                                model="gemini-3.8-flash",
-                                contents=[image_to_analyze, prompt]
-                            )
-                            st.session_state.report_text = response.text
-                            st.session_state.detected_meds = extract_med_names(client, response.text)
+                            raw_response = generate_with_fallback(client, [image_to_analyze, prompt])
+                            clean_rep, meds_found = parse_report_and_meds(raw_response)
+                            st.session_state.report_text = clean_rep
+                            st.session_state.detected_meds = meds_found
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            st.error(f"Temporarily busy. Please try again in a few seconds. ({e})")
         else:
             st.info("👆 Upload an image or take a photo to begin.")
 
@@ -195,14 +256,14 @@ with left_col:
         st.markdown("### 💊 Search Any Medicine")
         med_query = st.text_input("Enter Medicine Name", placeholder="e.g., Paracetamol 650mg, Pantoprazole 40...")
         med_extra = st.text_area("Specific Question (Optional)", placeholder="e.g., Can I take this before breakfast?")
-        if st.button("🔎 Get Medicine Info & Price"):
+        if st.button("🔎 Get Medicine Info & Generic"):
             client = get_client()
             if not client:
                 st.error("⚠️ Server API Key not configured yet.")
             elif not med_query.strip():
                 st.warning("Please enter a medicine name first.")
             else:
-                with st.spinner(f"Searching details & price for {med_query}..."):
+                with st.spinner(f"Searching details, price & generic alternatives for {med_query}..."):
                     try:
                         prompt = f"""
                         Provide clear, accurate medical information about the medicine: {med_query} (in India).
@@ -210,18 +271,16 @@ with left_col:
                         Provide the response in {language} covering:
                         - **Generic Composition & Category**
                         - **Estimated Current Price in India (MRP in ₹)**
+                        - **Affordable Generic Alternative (Jan Aushadhi / সাশ্রয়ী বিকল্প)** (exact generic salt & approximate lower price in ₹)
                         - **Primary Uses**
                         - **General Dosage & Food Timing Guidelines**
                         - **Common Side Effects & Safety Warnings**
                         """
-                        response = client.models.generate_content(
-                            model="gemini-3.8-flash",
-                            contents=prompt
-                        )
-                        st.session_state.report_text = response.text
+                        result_text = generate_with_fallback(client, prompt)
+                        st.session_state.report_text = result_text
                         st.session_state.detected_meds = [med_query.strip()]
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Temporarily busy. Please try again in a few seconds. ({e})")
 
     with tab3:
         st.markdown("### ⚠️ Drug Interaction Checker")
@@ -247,14 +306,11 @@ with left_col:
                         - **Recommended Spacing / Timing Tips**
                         - **When to Consult a Doctor Immediately**
                         """
-                        response = client.models.generate_content(
-                            model="gemini-3.8-flash",
-                            contents=prompt
-                        )
-                        st.session_state.report_text = response.text
+                        result_text = generate_with_fallback(client, prompt)
+                        st.session_state.report_text = result_text
                         st.session_state.detected_meds = [m.strip() for m in meds_list.split(",") if m.strip()]
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Temporarily busy. Please try again in a few seconds. ({e})")
 
     with tab4:
         st.markdown("### ⏰ Set Medicine Reminder")
@@ -364,6 +420,40 @@ components.html(f"""
 with right_col:
     st.markdown("### 📋 AI Analysis & Medicine Details")
     if st.session_state.report_text:
+        clean_speech = re.sub(r"[#*`_>\-]+", " ", st.session_state.report_text)
+        clean_speech = re.sub(r"\s+", " ", clean_speech).strip()
+        speech_json = json.dumps(clean_speech)
+
+        components.html(f"""
+            <div style="font-family: sans-serif; display: flex; align-items: center; gap: 10px; background: #f8fafc; padding: 10px 14px; border-radius: 12px; border: 1px solid #cbd5e1;">
+                <span style="font-size: 14px; font-weight: 600; color: #334155;">🔊 Audio Reader:</span>
+                <button onclick="speakReport()" style="background: #0d9488; color: white; border: none; padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 600;">
+                    ▶️ Listen Report
+                </button>
+                <button onclick="stopReport()" style="background: #ef4444; color: white; border: none; padding: 7px 14px; border-radius: 8px; cursor: pointer; font-weight: 600;">
+                    ⏹️ Stop
+                </button>
+            </div>
+            <script>
+            const textToRead = {speech_json};
+            function speakReport() {{
+                if ("speechSynthesis" in window) {{
+                    window.speechSynthesis.cancel();
+                    const utterance = new SpeechSynthesisUtterance(textToRead);
+                    utterance.rate = 0.95;
+                    window.speechSynthesis.speak(utterance);
+                }} else {{
+                    alert("Sorry, voice reader is not supported in this browser.");
+                }}
+            }}
+            function stopReport() {{
+                if ("speechSynthesis" in window) {{
+                    window.speechSynthesis.cancel();
+                }}
+            }}
+            </script>
+        """, height=62)
+
         st.markdown('<div class="med-card">', unsafe_allow_html=True)
         st.markdown(st.session_state.report_text)
         st.markdown('</div>', unsafe_allow_html=True)
@@ -377,55 +467,6 @@ with right_col:
                 url_apollo = f"https://www.apollopharmacy.in/search-medicines/{encoded}"
                 st.markdown(f"""
                     <div class="buy-box">
-                        <div style="font-weight: 700; color: #065f46; font-size: 1rem;">💊 {med}</div>
+                        <div style="font-weight: 700; color: #065f46; font-size: 1.05rem;">💊 {med}</div>
                         <div class="buy-links">
-                            <a href="{url_1mg}" target="_blank">Buy on Tata 1mg ↗</a>
-                            <a href="{url_pharmeasy}" target="_blank" style="background-color:#0284c7;">Buy on PharmEasy ↗</a>
-                            <a href="{url_apollo}" target="_blank" style="background-color:#0f766e;">Buy on Apollo ↗</a>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-
-        st.download_button(
-            label="📥 Download Analysis Report",
-            data=st.session_state.report_text,
-            file_name="MediScan_AI_Report.txt",
-            mime="text/plain"
-        )
-
-        st.divider()
-        st.markdown("#### 💬 Have a Question About This Report?")
-        follow_up = st.text_input("Ask AI anything about these medicines:", placeholder="e.g., Are there any food restrictions with these medicines?")
-        if st.button("Ask AI"):
-            client = get_client()
-            if not client:
-                st.error("⚠️ Server API Key not configured yet.")
-            elif follow_up.strip():
-                with st.spinner("Thinking..."):
-                    try:
-                        chat_prompt = f"""
-                        Based on this medical report:
-                        {st.session_state.report_text}
-                        
-                        Answer the patient's question clearly in {language}:
-                        Question: {follow_up}
-                        """
-                        ans = client.models.generate_content(
-                            model="gemini-3.8-flash",
-                            contents=chat_prompt
-                        )
-                        st.info(ans.text)
-                    except Exception as e:
-                        st.error(f"Error: {e}")
-    else:
-        st.markdown("""
-            <div class="med-card" style="border-top-color: #94a3b8; opacity: 0.85;">
-                <h4 style="color:#475569; margin-top:0;">Waiting for Input...</h4>
-                <p style="color:#64748b; margin-bottom:0;">
-                    Scan a prescription, search a medicine, check drug safety, or set a dose reminder on the left to see prices and buy links here.
-                </p>
-            </div>
-        """, unsafe_allow_html=True)
-
-st.divider()
-st.caption("MediScan AI • Built with Python, Streamlit & Gemini AI")
+                            <a href="{url_1mg}" target="_blank">Buy on Tata 1mg
