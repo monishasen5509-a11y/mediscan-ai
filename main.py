@@ -102,6 +102,12 @@ if "detected_meds" not in st.session_state:
 if "reminders" not in st.session_state:
     st.session_state.reminders = []
 
+def get_client():
+    api_key = st.secrets.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
 def extract_med_names(client, text_summary):
     try:
         res = client.models.generate_content(
@@ -117,7 +123,6 @@ with st.sidebar:
     st.markdown("## 🏥 MediScan AI")
     st.caption("AI-Powered Prescription & Medicine Analyzer")
     st.divider()
-    api_key = st.text_input("🔑 Enter Gemini API Key", type="password", placeholder="AIzaSy...")
     language = st.selectbox("🌐 Output Language", ["Both (English + বাংলা)", "English", "Bengali (বাংলা)"])
     st.divider()
     st.markdown("### 📌 All Features")
@@ -159,12 +164,12 @@ with left_col:
 
         if image_to_analyze is not None:
             if st.button("🔍 Analyze Prescription"):
-                if not api_key:
-                    st.error("⚠️ Please enter your Gemini API Key in the left sidebar first!")
+                client = get_client()
+                if not client:
+                    st.error("⚠️ Server API Key not configured yet.")
                 else:
                     with st.spinner("Reading handwriting, estimating prices & preparing buy links..."):
                         try:
-                            client = genai.Client(api_key=api_key)
                             prompt = f"""
                             You are a helpful medical assistant in India. Carefully read this doctor's prescription image and extract all medicines listed.
                             Provide the response in {language}.
@@ -191,14 +196,14 @@ with left_col:
         med_query = st.text_input("Enter Medicine Name", placeholder="e.g., Paracetamol 650mg, Pantoprazole 40...")
         med_extra = st.text_area("Specific Question (Optional)", placeholder="e.g., Can I take this before breakfast?")
         if st.button("🔎 Get Medicine Info & Price"):
-            if not api_key:
-                st.error("⚠️ Please enter your Gemini API Key in the left sidebar first!")
+            client = get_client()
+            if not client:
+                st.error("⚠️ Server API Key not configured yet.")
             elif not med_query.strip():
                 st.warning("Please enter a medicine name first.")
             else:
                 with st.spinner(f"Searching details & price for {med_query}..."):
                     try:
-                        client = genai.Client(api_key=api_key)
                         prompt = f"""
                         Provide clear, accurate medical information about the medicine: {med_query} (in India).
                         Additional user question: {med_extra}
@@ -226,14 +231,14 @@ with left_col:
             placeholder="e.g., Paracetamol 650, Ibuprofen 400, Pantoprazole 40"
         )
         if st.button("🛡️ Check Safety & Interactions"):
-            if not api_key:
-                st.error("⚠️ Please enter your Gemini API Key in the left sidebar first!")
+            client = get_client()
+            if not client:
+                st.error("⚠️ Server API Key not configured yet.")
             elif not meds_list.strip():
                 st.warning("Please enter at least two medicine names.")
             else:
                 with st.spinner("Checking potential drug interactions..."):
                     try:
-                        client = genai.Client(api_key=api_key)
                         prompt = f"""
                         Analyze potential drug interactions between these medicines: {meds_list}.
                         Provide the response in {language} covering:
@@ -392,12 +397,12 @@ with right_col:
         st.markdown("#### 💬 Have a Question About This Report?")
         follow_up = st.text_input("Ask AI anything about these medicines:", placeholder="e.g., Are there any food restrictions with these medicines?")
         if st.button("Ask AI"):
-            if not api_key:
-                st.error("⚠️ Please enter your Gemini API Key in the sidebar!")
+            client = get_client()
+            if not client:
+                st.error("⚠️ Server API Key not configured yet.")
             elif follow_up.strip():
                 with st.spinner("Thinking..."):
                     try:
-                        client = genai.Client(api_key=api_key)
                         chat_prompt = f"""
                         Based on this medical report:
                         {st.session_state.report_text}
